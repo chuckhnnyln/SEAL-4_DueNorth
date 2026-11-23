@@ -132,6 +132,43 @@ const ILL_WP_DB_INC = __DIR__ . '/wp_db.inc';
 defined('ILL_EMAIL_MODE') || define('ILL_EMAIL_MODE', 'wordpress');
 defined('ILL_EMAIL_TEST_TO') || define('ILL_EMAIL_TEST_TO', '');
 
+// How email leaves this server. 'mail' (default) = PHP's mail() and the server's mail program (sendmail, Postfix).
+// 'wordpress' = load WordPress from ILL_WP_PATH (the folder with wp-load.php) and send with wp_mail(), so the site's
+// mail plugin (FluentSMTP, WP Mail SMTP…) sends the jobs' email too. With 'wordpress', run the jobs as the web
+// server user (e.g. www-data), not root: WordPress and its plugins then run as that user.
+defined('ILL_MAIL_VIA') || define('ILL_MAIL_VIA', 'mail');
+defined('ILL_WP_PATH') || define('ILL_WP_PATH', '');
+
+// WordPress is loaded here, at the top level of this file, because its files expect to run in global scope
+// (inside a function, globals such as $table_prefix would be lost). Anything it prints is discarded.
+$ill_wp_error = '';
+if (ILL_MAIL_VIA === 'wordpress' && !function_exists('wp_mail')) {
+    $ill_wp_load = rtrim(ILL_WP_PATH, '/') . '/wp-load.php';
+    if (ILL_WP_PATH === '' || !is_readable($ill_wp_load)) {
+        $ill_wp_error = ILL_WP_PATH === '' ? 'ILL_WP_PATH is not set' : $ill_wp_load . ' not found or not readable';
+    } else {
+        $ill_wp_host = (string) (parse_url(ILL_BASE_URL, PHP_URL_HOST) ?: 'localhost');
+        $_SERVER['HTTP_HOST']   = $_SERVER['HTTP_HOST'] ?? $ill_wp_host;   // WordPress reads these; the command line has none
+        $_SERVER['SERVER_NAME'] = $_SERVER['SERVER_NAME'] ?? $ill_wp_host;
+        $_SERVER['REQUEST_URI'] = $_SERVER['REQUEST_URI'] ?? '/';
+        if (str_starts_with(ILL_BASE_URL, 'https://')) { $_SERVER['HTTPS'] = 'on'; }
+        defined('WP_USE_THEMES') || define('WP_USE_THEMES', false);
+        ob_start();
+        try {
+            require_once $ill_wp_load;
+        } catch (\Throwable $e) {
+            $ill_wp_error = 'WordPress failed to load: ' . $e->getMessage();
+        }
+        ob_end_clean();
+        if ($ill_wp_error === '' && !function_exists('wp_mail')) {
+            $ill_wp_error = 'WordPress loaded but wp_mail() is not available';
+        }
+    }
+    if ($ill_wp_error !== '') {
+        error_log(date('c') . " - WARNING: ILL_MAIL_VIA is 'wordpress' but $ill_wp_error - emails will NOT be sent this run.\n", 3, ILL_LOG_FILE);
+    }
+}
+
 /** @return array{mode:string,to:string} mode is send | redirect | off */
 function ill_email_settings(): array
 {
@@ -156,8 +193,8 @@ function ill_email_settings(): array
 }
 
 /**
- * Every script sends email through this instead of mail(), so Email test mode applies to all of them.
- * Same arguments as mail().
+ * Every script sends email through this instead of mail(), so Email test mode applies to all of them, and the
+ * email goes out the way ILL_MAIL_VIA says (ill_send()). Same arguments as mail().
  *
  * @param string|array $headers
  */
@@ -206,13 +243,39 @@ function ill_mail(string $to, string $subject, string $message, $headers = '', s
               . '<strong>TEST MODE</strong> - this email would have gone to: ' . ill_h($who) . '</div>' . $message, $subject)
             : "TEST MODE - this email would have gone to: $who\n\n" . $message;
         error_log(date('c') . " - EMAIL TEST MODE (redirect): sent to $test instead of $to - $subject\n", 3, ILL_LOG_FILE);
-        [$keep, $message] = ill_mail_encode($keep, $message);
-        return mail($test, '[TEST] ' . $subject, $message, implode("\r\n", $keep), $params);
+        return ill_send($test, '[TEST] ' . $subject, $message, $keep, $params);
     }
     $isHtml = stripos(is_array($headers) ? implode("\n", $headers) : (string) $headers, 'text/html') !== false;
-    $lines  = ill_header_lines($headers);
-    [$lines, $message] = ill_mail_encode($lines, $isHtml ? ill_email_layout($message, $subject) : $message);
-    return mail($to, $subject, $message, implode("\r\n", $lines), $params);
+    return ill_send($to, $subject, $isHtml ? ill_email_layout($message, $subject) : $message, ill_header_lines($headers), $params);
+}
+
+/**
+ * Hands one finished email to the way this server sends (ILL_MAIL_VIA): PHP's mail() with the body base64-encoded,
+ * or WordPress's wp_mail() (the mail plugin then sends it; PHPMailer does the encoding). Logs why wp_mail() failed.
+ */
+function ill_send(string $to, string $subject, string $body, array $lines, string $params): bool
+{
+    if (ILL_MAIL_VIA === 'wordpress') {
+        if (!function_exists('wp_mail')) {
+            error_log(date('c') . " - EMAIL NOT SENT (WordPress mail unavailable: {$GLOBALS['ill_wp_error']}) to $to - $subject\n", 3, ILL_LOG_FILE);
+            return false;
+        }
+        $lines = array_values(array_filter($lines, static fn($h) => !preg_match('/^\s*(MIME-Version|Content-Transfer-Encoding)\s*:/i', $h)));
+        if (!preg_grep('/^\s*Content-Type\s*:/i', $lines)) {
+            $lines[] = 'Content-Type: text/plain; charset=UTF-8';
+        }
+        $err = '';
+        $why = static function ($e) use (&$err): void { $err = is_object($e) && method_exists($e, 'get_error_message') ? $e->get_error_message() : ''; };
+        add_action('wp_mail_failed', $why);
+        $ok = (bool) wp_mail($to, $subject, $body, $lines);
+        remove_action('wp_mail_failed', $why);
+        if (!$ok) {
+            error_log(date('c') . " - EMAIL FAILED (wp_mail" . ($err !== '' ? ": $err" : '') . ") to $to - $subject\n", 3, ILL_LOG_FILE);
+        }
+        return $ok;
+    }
+    [$lines, $body] = ill_mail_encode($lines, $body);
+    return mail($to, $subject, $body, implode("\r\n", $lines), $params);
 }
 
 /** Headers given as a string or an array (either "Name: value" lines or Name => value) as a list of lines. */
@@ -817,9 +880,135 @@ function ill_cron_columns(): array
     ];
 }
 
+/**
+ * What this server's command-line PHP has (the PHP the cron jobs run with, which can differ from the web server's):
+ * PHP version, extensions, the mail program PHP's mail() hands messages to, and the files the jobs write to.
+ */
+function ill_system_facts(): array
+{
+    $sendmail = trim((string) ini_get('sendmail_path'));
+    $bin      = $sendmail === '' ? '' : (string) strtok($sendmail, " \t");
+    $logDir   = dirname(ILL_LOG_FILE);
+    $uid      = function_exists('posix_geteuid') ? posix_geteuid() : null;
+    return [
+        'php'          => PHP_VERSION,
+        'ext'          => array_fill_keys(array_map('strtolower', get_loaded_extensions()), true),
+        'sendmail'     => $sendmail,
+        'sendmail_ok'  => $bin !== '' && is_file($bin) && is_executable($bin),
+        'email_mode'   => (string) ILL_EMAIL_MODE,
+        'log'          => ILL_LOG_FILE,
+        'log_ok'       => is_file(ILL_LOG_FILE) ? is_writable(ILL_LOG_FILE) : is_writable($logDir),
+        'cache_dir'    => __DIR__,
+        'cache_ok'     => is_writable(__DIR__),
+        'auto_fetch'   => (bool) ILL_HOLIDAY_AUTO_FETCH,
+        'db_inc'       => ILL_DB_INC,
+        'db_inc_ok'    => is_readable(ILL_DB_INC),
+        'db_inc_world' => is_file(ILL_DB_INC) && (fileperms(ILL_DB_INC) & 0004) !== 0,
+        'timezone'     => date_default_timezone_get(),
+        'tz_ini'       => (string) ini_get('date.timezone'),
+        'user'         => $uid === null ? (string) getenv('USER') : ((posix_getpwuid($uid)['name'] ?? (string) $uid)),
+        'root'         => $uid === 0,
+        'mail_via'     => (string) ILL_MAIL_VIA,
+        'wp_error'     => (string) ($GLOBALS['ill_wp_error'] ?? ''),
+        'wp_plugin'    => ill_wp_mail_plugin(),
+    ];
+}
+
+/** With ILL_MAIL_VIA = 'wordpress': the plugin that replaced or set up wp_mail() ('' when WordPress's own is used, or not loaded). */
+function ill_wp_mail_plugin(): string
+{
+    if (!function_exists('wp_mail')) {
+        return '';
+    }
+    $file = str_replace('\\', '/', (string) (new ReflectionFunction('wp_mail'))->getFileName());
+    if ($file !== '' && !str_ends_with($file, 'wp-includes/pluggable.php')) {
+        return preg_match('#/plugins/([^/]+)/#', $file, $m) ? $m[1] : basename($file);
+    }
+    return function_exists('has_action') && (has_action('phpmailer_init') || has_filter('pre_wp_mail')) ? 'a mail plugin' : '';
+}
+
+/**
+ * Findings for ill_system_facts(): [level, label, text], level ok | info | warn | fail. No checks touch the
+ * network or a database, so this also runs before ill_db.inc is filled in.
+ */
+function ill_system_findings(array $f): array
+{
+    $out = [];
+    $out[] = version_compare($f['php'], '8.0', '>=')
+        ? ['ok', 'PHP', $f['php'] . ' (command line, as user ' . ($f['user'] !== '' ? $f['user'] : 'unknown') . ')']
+        : ['fail', 'PHP', $f['php'] . ': the scripts need PHP 8.0 or newer'];
+    $ext = [
+        'mysqli'  => ['fail', 'database connections (php-mysql package)'],
+        'openssl' => ['fail', 'encrypted database connections and ILLiad keys (part of PHP on most systems)'],
+        'sodium'  => ['warn', 'reading ILLiad keys the plugin encrypted with sodium; without it they read as blank (part of PHP 7.2+ on most systems)'],
+        'json'    => ['fail', 'ILLiad answers and holiday lists'],
+        'ctype'   => ['warn', 'input checks'],
+        'curl'    => ['info', 'ILLiad and holiday requests (php-curl package); without it PHP\'s own HTTPS streams are used'],
+    ];
+    foreach ($ext as $name => [$level, $why]) {
+        $out[] = isset($f['ext'][$name]) ? ['ok', 'Extension ' . $name, 'loaded'] : [$level, 'Extension ' . $name, 'MISSING, needed for ' . $why];
+    }
+    if (($f['mail_via'] ?? 'mail') === 'wordpress') {
+        if ($f['wp_error'] !== '') {
+            $out[] = ['fail', 'Mail via WordPress', $f['wp_error'] . ': no email can be sent (set ILL_WP_PATH in cron_local.php to the folder with wp-load.php)'];
+        } elseif ($f['wp_plugin'] === '') {
+            $out[] = ['warn', 'Mail via WordPress', 'WordPress loads, but no mail plugin handles wp_mail(), so it falls back to PHP\'s mail() ('
+                . ($f['sendmail_ok'] ? $f['sendmail'] : 'mail program NOT found') . '). Activate FluentSMTP or another SMTP plugin.'];
+        } else {
+            $out[] = ['ok', 'Mail via WordPress', 'wp_mail() goes through ' . ($f['wp_plugin'] === 'a mail plugin' ? 'a mail plugin' : 'the mail plugin ' . $f['wp_plugin'])];
+        }
+        if (!empty($f['root'])) {
+            $out[] = ['warn', 'Cron user', 'running as root with ILL_MAIL_VIA = \'wordpress\': WordPress and its plugins run as root and may leave root-owned files. Run the jobs as the web server user (e.g. www-data).'];
+        }
+    } elseif ($f['sendmail_ok']) {
+        $out[] = ['ok', 'Mail program', $f['sendmail']];
+    } else {
+        $out[] = [$f['email_mode'] === 'off' ? 'warn' : 'fail', 'Mail program',
+            ($f['sendmail'] === '' ? 'sendmail_path is not set' : $f['sendmail'] . ' NOT found or not executable')
+            . ': PHP\'s mail() cannot send, so reminders, expiry and due-date emails are lost (the requests are still updated). '
+            . 'Install a mail program that relays for your From address, e.g. Postfix (apt install postfix) or msmtp-mta, '
+            . 'or send through WordPress\'s mail plugin (FluentSMTP…) with ILL_MAIL_VIA = \'wordpress\' in cron_local.php.'
+            . ($f['email_mode'] === 'off' ? ' (Nothing is sent now: ILL_EMAIL_MODE is \'off\'.)' : '')];
+    }
+    $out[] = $f['log_ok'] ? ['ok', 'Log file', $f['log'] . ' writable'] : ['fail', 'Log file', $f['log'] . ' NOT writable by this user (set ILL_LOG_FILE in cron_local.php or fix the permissions)'];
+    if ($f['auto_fetch']) {
+        $out[] = $f['cache_ok'] ? ['ok', 'Holiday cache', $f['cache_dir'] . ' writable']
+            : ['warn', 'Holiday cache', $f['cache_dir'] . ' NOT writable: the federal holiday list is fetched on every run instead of cached'];
+    }
+    if (!$f['db_inc_ok']) {
+        $out[] = ['fail', 'ill_db.inc', $f['db_inc'] . ' missing or not readable by this user (database logins)'];
+    } else {
+        $out[] = $f['db_inc_world'] ? ['warn', 'ill_db.inc', 'readable by every user on the server: chmod 600 ' . $f['db_inc']] : ['ok', 'ill_db.inc', 'readable, not world-readable'];
+    }
+    $out[] = $f['tz_ini'] !== '' ? ['ok', 'Time zone', $f['timezone']]
+        : ['warn', 'Time zone', $f['timezone'] . ' (date.timezone not set in php.ini: due dates and business days use this zone)'];
+    return $out;
+}
+
+/** Prints ill_system_findings() as "Label: RESULT text" lines and returns how many problems (fail) there are. */
+function ill_print_system_check(): int
+{
+    $word  = ['ok' => 'ok', 'info' => 'note', 'warn' => 'WARNING', 'fail' => 'PROBLEM'];
+    $fails = 0;
+    echo "Server (command-line PHP, used by the cron jobs):\n";
+    foreach (ill_system_findings(ill_system_facts()) as [$level, $label, $text]) {
+        $fails += $level === 'fail' ? 1 : 0;
+        echo '  ' . str_pad($label . ':', 20) . str_pad($word[$level], 9) . $text . "\n";
+    }
+    echo $fails ? "  $fails problem(s) to fix before the jobs can work.\n\n" : "  No problems.\n\n";
+    return $fails;
+}
+
+// `php cron_config.php --check-system` (from the scripts folder): what the cron jobs need from this server (PHP,
+// extensions, mail program, log file). Needs no database login and changes nothing. --check-db prints it too.
+if (PHP_SAPI === 'cli' && realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__ && in_array('--check-system', $argv ?? [], true)) {
+    exit(ill_print_system_check() ? 1 : 0);
+}
+
 // `php cron_config.php --check-db` (from the scripts folder): connect to both databases the way the jobs do and show
 // whether each connection is encrypted. Changes nothing.
 if (PHP_SAPI === 'cli' && realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__ && in_array('--check-db', $argv ?? [], true)) {
+    ill_print_system_check();
     $cipher = static function ($db): string {
         $r = $db ? mysqli_query($db, "SHOW SESSION STATUS LIKE 'Ssl_cipher'") : false;
         $row = $r ? mysqli_fetch_row($r) : null;
