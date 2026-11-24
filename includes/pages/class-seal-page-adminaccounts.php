@@ -172,8 +172,10 @@ class SEAL_Page_adminaccounts extends SEAL_Page_Base {
                     $ln    = (string) get_user_meta( $u->ID, 'last_name',  true );
                     $loc   = (string) get_user_meta( $u->ID, 'address_loc_code', true );
                     $hsys  = (string) get_user_meta( $u->ID, 'home_system', true );
-                    $ll_ts = get_user_meta( $u->ID, 'wp-last-login', true );
-                    $ll    = $ll_ts ? date( 'Y-m-d', (int) $ll_ts ) : '—';
+                    // Written by SEAL_Module_LastLogin; wp-last-login is the older plugin's key, kept for people
+                    // who have not signed in since.
+                    $ll_ts = (int) get_user_meta( $u->ID, 'seal_last_login', true ) ?: (int) get_user_meta( $u->ID, 'wp-last-login', true );
+                    $ll    = $ll_ts ? date_i18n( 'Y-m-d', $ll_ts ) : '—';
                     $reg   = date( 'Y-m-d', strtotime( $u->user_registered ) );
                     $can   = $u->ID === get_current_user_id() || current_user_can( 'edit_user', $u->ID );   // not Administrators / ILL Administrators for an ILL Administrator
                     $sec   = SEAL_Functions::account_security( $u, $can );
