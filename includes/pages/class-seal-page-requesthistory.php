@@ -32,28 +32,23 @@ class SEAL_Page_requesthistory extends SEAL_Page_Base {
             $filter_loc = $all_locs[0] ?? $primary_loc;
         }
 
-        // Filters
-        $filter_yes      = $this->req_str('filter_yes',     'yes');
-        $filter_no       = $this->req_str('filter_no',      'yes');
-        $filter_noans    = $this->req_str('filter_noans',   'yes');
-        $filter_expire   = $this->req_str('filter_expire',  '');
-        $filter_cancel   = $this->req_str('filter_cancel',  '');
-        $filter_recevied = $this->req_str('filter_recevied','');
-        $filter_return   = $this->req_str('filter_return',  '');
-        $filter_checkin  = $this->req_str('filter_checkin', '');
+        // Filters. First visit (filter form not submitted) → Filled, Not Filled and Pending only. Keyed on a hidden
+        // field, not on a status box: an unticked checkbox is not sent, so it would look like a first visit.
+        $defaults        = !isset($_REQUEST['filter_submitted']);
+        $filter_yes      = $defaults ? 'yes' : $this->req_str('filter_yes',     '');
+        $filter_no       = $defaults ? 'yes' : $this->req_str('filter_no',      '');
+        $filter_noans    = $defaults ? 'yes' : $this->req_str('filter_noans',   '');
+        $filter_expire   = $defaults ? ''    : $this->req_str('filter_expire',  '');
+        $filter_cancel   = $defaults ? ''    : $this->req_str('filter_cancel',  '');
+        $filter_recevied = $defaults ? ''    : $this->req_str('filter_recevied','');
+        $filter_return   = $defaults ? ''    : $this->req_str('filter_return',  '');
+        $filter_checkin  = $defaults ? ''    : $this->req_str('filter_checkin', '');
         $filter_days     = $this->req_str('filter_days',    '365');
         $filter_illnum   = $this->req_str('filter_illnum',  '');
 
         if ($filter_illnum !== '') {
             $filter_yes = $filter_no = $filter_noans = $filter_expire = $filter_cancel = $filter_recevied = $filter_return = $filter_checkin = 'yes';
             $filter_days = 'all';
-        }
-
-        // First-load defaults (when no form submitted)
-        if (!isset($_REQUEST['filter_yes'])) {
-            $filter_yes = $filter_no = $filter_noans = 'yes';
-            $filter_expire = $filter_cancel = $filter_recevied = $filter_return = $filter_checkin = '';
-            $filter_days = '365';
         }
 
         // Build WHERE for loc scope
@@ -106,6 +101,7 @@ class SEAL_Page_requesthistory extends SEAL_Page_Base {
         <form method="post" action="<?php echo $self; ?>" aria-label="Filter request history" class="seal-limit-form">
             <input type="hidden" name="loc" value="<?php echo esc_attr($primary_loc); ?>">
             <?php $this->nonce_field('seal_filter'); ?>
+            <input type="hidden" name="filter_submitted" value="1">
 
             <div class="section-card">
                 <h4>Limit Results</h4>

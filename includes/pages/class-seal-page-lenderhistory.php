@@ -36,7 +36,9 @@ class SEAL_Page_lenderhistory extends SEAL_Page_Base {
         }
 
         // Default filters
-        $defaults = !isset($_REQUEST['filter_yes']);
+        // First visit (filter form not submitted) → defaults. Keyed on a hidden field, not on a status box:
+        // an unticked checkbox is not sent, so unticking "Filled" used to look like a first visit.
+        $defaults = !isset($_REQUEST['filter_submitted']);
         $filter_yes      = $defaults ? 'yes' : $this->req_str('filter_yes','');
         $filter_no       = $defaults ? 'yes' : $this->req_str('filter_no','');
         $filter_noans    = $defaults ? 'yes' : $this->req_str('filter_noans','');
@@ -112,6 +114,7 @@ class SEAL_Page_lenderhistory extends SEAL_Page_Base {
         <form method="post" action="<?php echo $self; ?>" aria-label="Filter lending history">
             <input type="hidden" name="loc" value="<?php echo esc_attr($primary_loc); ?>">
             <?php $this->nonce_field('seal_filter'); ?>
+            <input type="hidden" name="filter_submitted" value="1">
 
             <?php if ($has_multi): ?>
             <label for="lh_loc" style="font-weight:bold;">Library:</label>
