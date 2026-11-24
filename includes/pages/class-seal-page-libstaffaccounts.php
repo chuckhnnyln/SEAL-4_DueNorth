@@ -70,8 +70,10 @@ class SEAL_Page_libstaffaccounts extends SEAL_Page_Base {
             $uloc   = strtoupper((string)get_user_meta($u->ID,'address_loc_code',true));
             $fname  = (string)get_user_meta($u->ID,'first_name',true);
             $lname  = (string)get_user_meta($u->ID,'last_name', true);
-            $ll_ts  = get_user_meta($u->ID,'wp-last-login',true);
-            $ll     = $ll_ts ? date('Y-m-d H:i',(int)$ll_ts) : 'Unknown';
+            // Written by SEAL_Module_LastLogin; wp-last-login is the older plugin's key, kept for people who
+            // have not signed in since.
+            $ll_ts  = (int)get_user_meta($u->ID,'seal_last_login',true) ?: (int)get_user_meta($u->ID,'wp-last-login',true);
+            $ll     = $ll_ts ? date_i18n('Y-m-d H:i',$ll_ts) : 'Unknown';
             $reg    = date('Y-m-d',strtotime($u->user_registered));
         ?>
         <tr>
