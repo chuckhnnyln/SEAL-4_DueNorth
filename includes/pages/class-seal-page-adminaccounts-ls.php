@@ -83,6 +83,12 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
     /** This page's address with the given query arguments, escaped for an attribute. */
     private function url( array $args ): string { return esc_url( add_query_arg( $args, $this->self ) ); }
 
+    /** The account's "First Last" name; falls back to display_name when both name fields are empty. */
+    private static function name( WP_User $u ): string {
+        $n = trim( trim( (string) $u->first_name ) . ' ' . trim( (string) $u->last_name ) );
+        return $n !== '' ? $n : (string) $u->display_name;
+    }
+
     // ── List ──────────────────────────────────────────────────────────────────
 
     /**
@@ -92,13 +98,14 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
     private function render_list( string $notice = '' ): void {
         $search  = $this->get_str( 'search' );
         $only_p  = $this->get_str( 'pending' ) === '1';
-        $users   = get_users( [ 'meta_key' => 'home_system', 'meta_value' => $this->home, 'orderby' => 'display_name', 'order' => 'ASC', 'number' => -1 ] );
+        $users   = get_users( [ 'meta_key' => 'home_system', 'meta_value' => $this->home, 'number' => -1 ] );
+        usort( $users, static fn( WP_User $a, WP_User $b ) => strcasecmp( $a->last_name . ' ' . $a->first_name . ' ' . self::name( $a ), $b->last_name . ' ' . $b->first_name . ' ' . self::name( $b ) ) );
         $pending = array_values( array_filter( $users, static fn( WP_User $u ) => SEAL_Module_UserApproval::is_pending( (int) $u->ID ) ) );
         if ( $only_p ) { $users = $pending; }
         if ( $search !== '' ) {
             $needle = strtolower( $search );
             $users  = array_values( array_filter( $users, static function ( WP_User $u ) use ( $needle ) {
-                $hay = strtolower( implode( ' ', [ $u->display_name, $u->user_email, get_user_meta( $u->ID, 'institution', true ), get_user_meta( $u->ID, 'address_loc_code', true ) ] ) );
+                $hay = strtolower( implode( ' ', [ self::name( $u ), $u->display_name, $u->user_email, get_user_meta( $u->ID, 'institution', true ), get_user_meta( $u->ID, 'address_loc_code', true ) ] ) );
                 return strpos( $hay, $needle ) !== false;
             } ) );
         }
@@ -135,15 +142,15 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
                 $is_p = SEAL_Module_UserApproval::is_pending( (int) $u->ID );
                 $sec  = SEAL_Functions::account_security( $u, $this->editable( $u ) ); ?>
                 <tr>
-                    <td><strong><?php echo esc_html( $u->display_name ); ?></strong><?php if ( $is_p ) { echo ' <span class="status-badge">Pending approval</span>'; } ?><br>
+                    <td><strong><?php echo esc_html( self::name( $u ) ); ?></strong><?php if ( $is_p ) { echo ' <span class="status-badge">Pending approval</span>'; } ?><br>
                         <a href="mailto:<?php echo esc_attr( $u->user_email ); ?>" class="seal-acct-email"><?php echo esc_html( $u->user_email ); ?></a></td>
                     <td><?php echo esc_html( (string) get_user_meta( $u->ID, 'institution', true ) ); ?><br><small><?php echo esc_html( strtoupper( (string) get_user_meta( $u->ID, 'address_loc_code', true ) ) ); ?></small></td>
                     <td><?php echo esc_html( $role ?: implode( ', ', (array) $u->roles ) ); ?></td>
                     <td class="seal-acct-sec"><span><span class="seal-acct-lbl">Password</span> <?php echo $sec['pw']; ?></span><span><span class="seal-acct-lbl">2FA</span> <?php echo $sec['tfa']; ?></span></td>
                     <td><?php if ( $is_p && $this->editable( $u ) ) { echo SEAL_Module_UserApproval::buttons( $u, $this->self ); } ?>
                     <?php if ( $this->editable( $u ) ) : ?>
-                        <a class="btn-secondary" href="<?php echo $this->url( [ 'action' => 'edit', 'uid' => $u->ID ] ); ?>">Edit<span class="seal-sr-only"> <?php echo esc_html( $u->display_name ); ?></span></a>
-                        <a class="seal-acct-hist" href="<?php echo $this->url( [ 'action' => 'history', 'uid' => $u->ID ] ); ?>">History<span class="seal-sr-only"> of <?php echo esc_html( $u->display_name ); ?></span></a>
+                        <a class="btn-secondary" href="<?php echo $this->url( [ 'action' => 'edit', 'uid' => $u->ID ] ); ?>">Edit<span class="seal-sr-only"> <?php echo esc_html( self::name( $u ) ); ?></span></a>
+                        <a class="seal-acct-hist" href="<?php echo $this->url( [ 'action' => 'history', 'uid' => $u->ID ] ); ?>">History<span class="seal-sr-only"> of <?php echo esc_html( self::name( $u ) ); ?></span></a>
                     <?php else : ?>&mdash;<?php endif; ?></td>
                 </tr>
             <?php endforeach; ?>
@@ -168,7 +175,7 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
         };
         ?>
         <div class="adminlib-wrapper LibProfile_Form">
-        <div class="adminlib-header"><h3><?php echo $is_new ? 'Add Library Staff Account' : 'Edit Account: ' . esc_html( $u->display_name ); ?></h3></div>
+        <div class="adminlib-header"><h3><?php echo $is_new ? 'Add Library Staff Account' : 'Edit Account: ' . esc_html( self::name( $u ) ); ?></h3></div>
         <?php if ( $error ) { $this->alert( $error, 'error' ); } ?>
         <form method="post" action="<?php echo esc_url( $this->self ); ?>">
             <?php $this->nonce_field( $is_new ? 'seal_accounts_ls_add' : 'seal_accounts_ls_save_' . $u->ID ); ?>
@@ -302,15 +309,15 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
         if ( ! $u ) { $this->alert( 'That account is not a Library Staff account in your system.', 'error' ); return; }
         $this->verify_nonce( 'seal_decide_' . $u->ID );
         $act = sanitize_key( (string) wp_unslash( $_POST['seal_decide'] ?? '' ) );
-        if ( ! SEAL_Module_UserApproval::decide( (int) $u->ID, $act ) ) { $this->render_list( esc_html( $u->display_name ) . ' is no longer waiting for approval.' ); return; }
-        $this->render_list( esc_html( $u->display_name ) . ( $act === 'approve' ? ' was approved and has been emailed that they can log in.' : "'s registration was denied and they have been emailed." ) );
+        if ( ! SEAL_Module_UserApproval::decide( (int) $u->ID, $act ) ) { $this->render_list( esc_html( self::name( $u ) ) . ' is no longer waiting for approval.' ); return; }
+        $this->render_list( esc_html( self::name( $u ) ) . ( $act === 'approve' ? ' was approved and has been emailed that they can log in.' : "'s registration was denied and they have been emailed." ) );
     }
 
     /** One account's change history: Library Staff accounts in this staff member's own system only. */
     private function render_history(): void {
         $u = $this->target();
         if ( ! $u ) { $this->alert( 'That account is not a Library Staff account in your system.', 'error' ); return; }
-        echo '<div class="adminlib-wrapper"><div class="adminlib-header"><h3>Change history: ' . esc_html( $u->display_name ) . '</h3><div class="actions">' . $this->back() . '</div></div>'
+        echo '<div class="adminlib-wrapper"><div class="adminlib-header"><h3>Change history: ' . esc_html( self::name( $u ) ) . '</h3><div class="actions">' . $this->back() . '</div></div>'
            . '<p>Every recorded change to this account, whoever made it. Changes the person made themselves are marked “own account”. Passwords are never shown. Entries are kept for two years.</p>';
         SEAL_Audit::render( 'users', 200, 'No changes recorded for this account yet.', (int) $u->ID, '', true );
         echo '</div>';
@@ -323,7 +330,7 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
         ?>
         <div class="adminlib-wrapper">
             <div class="adminlib-header"><h3>Delete account?</h3></div>
-            <p>Permanently delete the account for <strong><?php echo esc_html( $u->display_name ); ?></strong> (<?php echo esc_html( $u->user_email ); ?>)? They will no longer be able to log in. Their past requests are kept.</p>
+            <p>Permanently delete the account for <strong><?php echo esc_html( self::name( $u ) ); ?></strong> (<?php echo esc_html( $u->user_email ); ?>)? They will no longer be able to log in. Their past requests are kept.</p>
             <form method="post" action="<?php echo esc_url( $this->self ); ?>">
                 <?php $this->nonce_field( 'seal_accounts_ls_delete_' . $u->ID ); ?>
                 <input type="hidden" name="action" value="delete"><input type="hidden" name="uid" value="<?php echo (int) $u->ID; ?>">
