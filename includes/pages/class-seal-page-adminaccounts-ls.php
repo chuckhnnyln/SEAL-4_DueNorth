@@ -78,6 +78,24 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
         return $row ? trim( (string) $row['Name'] ) : '';
     }
 
+    /**
+     * A user's additional LOC codes split into [ codes in this staff member's system, codes elsewhere ].
+     * Only the first list is shown and edited here; the second (set by an administrator) is kept on save.
+     */
+    private function split_extra_locs( int $uid ): array {
+        $mine = $other = [];
+        foreach ( $uid ? SEAL_Functions::extra_locs( $uid ) : [] as $c ) {
+            if ( $this->library_in_system( $c ) !== '' ) { $mine[] = $c; } else { $other[] = $c; }
+        }
+        return [ $mine, $other ];
+    }
+
+    /** Comma-separated LOC codes as a clean upper-case list: no spaces, blanks or repeats. */
+    private static function parse_locs( string $raw ): array {
+        $out = array_map( 'trim', explode( ',', strtoupper( preg_replace( '/\s+/', '', $raw ) ) ) );
+        return array_values( array_unique( array_filter( $out, 'strlen' ) ) );
+    }
+
     /** The "Return to list" button. */
     private function back(): string { return '<a class="btn-secondary" href="' . esc_url( $this->self ) . '">Return to list</a>'; }
     /** This page's address with the given query arguments, escaped for an attribute. */
@@ -171,8 +189,10 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
             if ( ! $u ) { return ''; }
             if ( $k === 'user_email' ) { return $u->user_email; }
             if ( in_array( $k, [ 'first_name', 'last_name' ], true ) ) { return (string) $u->$k; }
+            if ( $k === 'seal_extra_locs' ) { return implode( ',', $this->split_extra_locs( $u->ID )[0] ); }
             return (string) get_user_meta( $u->ID, $k, true );
         };
+        $other_locs = $u ? $this->split_extra_locs( $u->ID )[1] : [];
         ?>
         <div class="adminlib-wrapper LibProfile_Form">
         <div class="adminlib-header"><h3><?php echo $is_new ? 'Add Library Staff Account' : 'Edit Account: ' . esc_html( self::name( $u ) ); ?></h3></div>
@@ -197,6 +217,10 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
                 <div class="form-group"><label for="a_loc">LOC Location Code <span aria-hidden="true">*</span></label>
                     <input id="a_loc" type="text" name="address_loc_code" required aria-required="true" value="<?php echo esc_attr( strtoupper( $v( 'address_loc_code' ) ) ); ?>" aria-describedby="a_loc_h">
                     <div class="helper" id="a_loc_h">Must be a library in <?php echo esc_html( SEAL_Functions::system_name( $this->home ) ); ?>. The library name and mailing address come from its library profile.</div></div>
+                <div class="form-group"><label for="a_extra">Additional Managed LOC Codes</label>
+                    <input id="a_extra" type="text" name="seal_extra_locs" value="<?php echo esc_attr( strtoupper( $v( 'seal_extra_locs' ) ) ); ?>" aria-describedby="a_extra_h">
+                    <div class="helper" id="a_extra_h">Comma-separated codes for other libraries in <?php echo esc_html( SEAL_Functions::system_name( $this->home ) ); ?> this person manages, e.g. <code>NHIGS,NWATTJ</code>.<?php
+                        if ( $other_locs ) { echo ' Also manages ' . esc_html( implode( ', ', $other_locs ) ) . ' in other systems (set by an administrator; kept when you save).'; } ?></div></div>
                 <div class="form-group"><label for="a_oclc">OCLC Symbol</label><input id="a_oclc" type="text" name="oclc_symbol" value="<?php echo esc_attr( $v( 'oclc_symbol' ) ); ?>"></div>
               </div>
             </div>
@@ -243,12 +267,21 @@ class SEAL_Page_adminaccounts_ls extends SEAL_Page_Base {
         if ( $f['institution'] === '' ) {
             return [ 'LOC code ' . esc_html( $f['address_loc_code'] ) . ' is not a library in ' . esc_html( SEAL_Functions::system_name( $this->home ) ) . '. Check the <a href="' . esc_url( home_url( '/illdir' ) ) . '">ILL Directory</a>.', $f ];
         }
+        // Additional codes: only libraries in this system may be added here. Codes in other systems that an
+        // administrator already gave this account are kept (they are not shown in the form).
+        $extra = array_values( array_diff( self::parse_locs( $this->post_str( 'seal_extra_locs' ) ), [ $f['address_loc_code'] ] ) );
+        $bad   = array_values( array_filter( $extra, fn ( $c ) => $this->library_in_system( $c ) === '' ) );
+        if ( $bad ) {
+            return [ 'Additional LOC code' . ( count( $bad ) > 1 ? 's ' : ' ' ) . esc_html( implode( ', ', $bad ) ) . ( count( $bad ) > 1 ? ' are not libraries' : ' is not a library' ) . ' in ' . esc_html( SEAL_Functions::system_name( $this->home ) ) . '. Check the <a href="' . esc_url( home_url( '/illdir' ) ) . '">ILL Directory</a>.', $f ];
+        }
+        $kept = array_diff( $this->split_extra_locs( $uid )[1], [ $f['address_loc_code'] ] );
+        $f['seal_extra_locs'] = implode( ',', array_values( array_unique( array_merge( $extra, $kept ) ) ) );
         return [ '', $f ];
     }
 
     /** Saves the edited profile fields; the home system is always set to the editor's own system. */
     private function save_meta( int $uid, array $f ): void {
-        foreach ( [ 'phone', 'alt_email', 'address_loc_code', 'oclc_symbol', 'institution' ] as $k ) { update_user_meta( $uid, $k, $f[ $k ] ); }
+        foreach ( [ 'phone', 'alt_email', 'address_loc_code', 'seal_extra_locs', 'oclc_symbol', 'institution' ] as $k ) { update_user_meta( $uid, $k, $f[ $k ] ); }
         update_user_meta( $uid, 'home_system', $this->home );
     }
 
