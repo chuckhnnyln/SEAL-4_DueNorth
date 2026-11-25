@@ -54,27 +54,24 @@ class SEAL_Page_status_confirmation extends SEAL_Page_Base {
             $mod_email = esc_html( $this->user->user_email );
             $ts        = current_time('mysql');
 
-            if ( $task === 'suspend' ) {
-                $result = SEAL_DB::query(
-                    "UPDATE %t SET `suspend`='1', `SuspendDateEnd`=%s, `ModifyDate`=%s, `ModEmail`=%s
-                     WHERE `loc`<>'' AND `participant`='1' AND `suspend`='0' AND `system`=%s",
-                    $lib_tbl, $enddate, $ts, $mod_email, $system
-                );
-            } else {
-                $result = SEAL_DB::query(
-                    "UPDATE %t SET `suspend`='0', `ModifyDate`=%s, `ModEmail`=%s
-                     WHERE `loc`<>'' AND `participant`='1' AND `suspend`='1' AND `system`=%s",
-                    $lib_tbl, $ts, $mod_email, $system
-                );
-            }
+            // participant / suspend are 1/0 numbers on current tables but 'Yes'/'No' text on older ones; CAST AS CHAR
+            // matches both (comparing a number column with 'Yes' or a text column with '0' silently matches nothing).
+            $is_part = "CAST(`participant` AS CHAR) IN ('1','Yes')";
+            $is_susp = "CAST(`suspend` AS CHAR) IN ('1','Yes')";
+            $where   = "`loc`<>'' AND {$is_part} AND " . ( $task === 'suspend' ? "NOT IFNULL({$is_susp}, 0)" : $is_susp ) . ' AND `system`=%s';
+            $sets    = [ 'suspend' => $task === 'suspend' ? '1' : '0', 'ModifyDate' => $ts, 'ModEmail' => $mod_email ];
+            if ( $task === 'suspend' ) { $sets['SuspendDateEnd'] = $enddate; }
+            // Only the columns this install's library table has: one unknown column fails the whole UPDATE.
+            $result = SEAL_DB::update_existing( $lib_tbl, $sets, $where, $system );
 
             if ( $result !== false ) {
-                $count = SEAL_DB::get()->affected_rows;
+                $count = SEAL_DB::affected_rows();
                 $verb  = $task === 'suspend' ? 'suspended' : 'activated';
                 $this->alert( "Libraries in <strong>" . esc_html($displaysystem) . "</strong> have been <strong>{$verb}</strong>. Affected: {$count} libraries.", 'success' );
                 echo '<p><a href="' . esc_url(home_url('/adminlib-ls')) . '" class="seal-btn-primary">Back to Library Admin</a></p>';
             } else {
-                $this->alert('Update failed. Please try again.','error');
+                $why = current_user_can( 'seal_admin' ) ? ' Database said: ' . esc_html( SEAL_DB::last_error() ) : '';   // detail for administrators only
+                $this->alert( 'Update failed. Please try again.' . $why, 'error' );
             }
         } else {
             // Confirmation step

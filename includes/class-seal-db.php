@@ -180,7 +180,8 @@ class SEAL_DB {
         }
 
         $result = $db->query( $sql );
-        self::$last_error = $result === false ? (string) $db->error : '';
+        self::$last_error    = $result === false ? (string) $db->error : '';
+        self::$affected_rows = $result === false ? 0 : (int) $db->affected_rows;
 
         if ( $result === false ) {
             // Log the error but never the full SQL (may contain PII)
@@ -198,6 +199,10 @@ class SEAL_DB {
      * ordinary users.
      */
     public static function last_error(): string { return self::$last_error; }
+
+    /** Rows changed by the most recent query(). Read this, not get()->affected_rows: get() pings first, which resets it to -1. */
+    private static int $affected_rows = 0;
+    public static function affected_rows(): int { return self::$affected_rows; }
 
     // ── Writing only the columns a table really has ───────────────────────────
     // Installs differ: CDLC's library table has none of SEAL-3's delivery columns (lbsyscourier, ...), and one
